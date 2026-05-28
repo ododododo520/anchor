@@ -1,38 +1,42 @@
-# fly.toml app configuration file generated for anchor-9mhcua on 2026-05-28T22:04:53Z
+# fly.toml — Fly.io configuration for Anchor.
 #
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+# NOTE: there is intentionally no `app = "..."` line here. When you create the
+# app on Fly (via the dashboard or `fly launch`), Fly assigns/uses the correct
+# name automatically. Hardcoding a name that doesn't match the real app causes
+# routing problems, so we leave it out.
 #
+# The [mounts] section gives the app a persistent disk for the SQLite database
+# and uploaded cover images. Without it, all data is wiped on every restart.
 
-app = 'anchor-9mhcua'
-primary_region = 'ams'
+primary_region = "fra"
 
 [build]
-  dockerfile = 'Dockerfile'
+  dockerfile = "Dockerfile"
 
 [env]
-  DATABASE_PATH = '/app/data/anchor.db'
-  HOST = '0.0.0.0'
-  PORT = '8080'
-  UPLOAD_DIR = '/app/data/uploads'
+  PORT = "8080"
+  HOST = "0.0.0.0"
+  DATABASE_PATH = "/app/data/anchor.db"
+  UPLOAD_DIR = "/app/data/uploads"
 
-[[mounts]]
-  source = 'anchor_data'
-  destination = '/app/data'
+[mounts]
+  source = "anchor_data"
+  destination = "/app/data"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = 'stop'
+  auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 0
 
   [[http_service.checks]]
-    interval = '15s'
-    timeout = '2s'
-    grace_period = '10s'
-    method = 'GET'
-    path = '/health'
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
 
 [[vm]]
-  size = 'shared-cpu-1x'
-  memory = '512mb'
+  size = "shared-cpu-1x"
+  memory = "512mb"

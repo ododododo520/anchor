@@ -777,8 +777,11 @@ function showTab(tab, { skipRender = false } = {}) {
   PAGES.forEach(p => {
     document.getElementById('page-' + p).classList.toggle('hidden', p !== tab);
   });
-  // tab highlight only for the 3 main tabs
+  // tab highlight for the main tabs AND the sidebar nav (both use data-tab)
   document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === tab);
+  });
+  document.querySelectorAll('#sb-nav button').forEach(t => {
     t.classList.toggle('active', t.dataset.tab === tab);
   });
 
@@ -1039,6 +1042,24 @@ async function init() {
   document.querySelectorAll('.tab').forEach(t => {
     t.onclick = () => { if (t.dataset.tab === 'reviews') { /* keep filters */ } showTab(t.dataset.tab); };
   });
+
+  // sidebar nav mirrors the main tabs
+  document.querySelectorAll('#sb-nav button').forEach(t => {
+    t.onclick = () => showTab(t.dataset.tab);
+  });
+
+  // sidebar search → set search state, jump to reviews, filter live
+  const sbSearch = document.getElementById('sb-search-input');
+  if (sbSearch) {
+    sbSearch.oninput = (e) => {
+      state.search = e.target.value;
+      state.tagFilter = null;
+      showTab('reviews');
+      // keep focus in the sidebar box and reflect value into the in-page search
+      const inPage = document.getElementById('search-input');
+      if (inPage) inPage.value = state.search;
+    };
+  }
 
   // esc closes modals
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
