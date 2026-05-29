@@ -68,6 +68,31 @@
   --serif:  'Times New Roman', Times, Georgia, serif;
 }
 
+/* dark "terminal" theme — phosphor-ish on near-black, same pink/blue accents */
+:root[data-theme="dark"] {
+  --paper:        #14131a;
+  --paper-dark:   #0e0d12;
+  --win:          #1f1e28;
+  --win-face:     #2a2933;
+  --win-titlebar: #3a3947;
+  --win-titlebar2:#2c2b37;
+  --win-shadow:   #000000;
+
+  --ink:          #e7e4dd;
+  --ink-soft:     #c2bfb6;
+  --ink-mute:     #888394;
+
+  --line:         #3d3c49;
+  --line-dark:    #4a4957;
+  --hi:           #464552;   /* bevels: lighter edge */
+  --lo:           #131219;   /* bevels: darker edge */
+
+  --pink:         #e89ab6;
+  --pink-soft:    #c77a96;
+  --blue:         #9ab6e8;
+  --blue-soft:    #7a96c7;
+}
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -1252,7 +1277,190 @@ body::after {
   opacity: 0.04;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
+
+/* ─── 21. new feature styles ─────────────────────────────────────────────── */
+
+/* markdown output inside reviews */
+.review-body strong { font-weight: 700; color: var(--ink); }
+.review-body em { font-style: italic; }
+.review-body code {
+  font-family: var(--type);
+  background: var(--win-face);
+  border: 1px solid var(--line);
+  padding: 0 4px;
+  font-size: 0.9em;
+}
+.review-body blockquote {
+  margin: 0.9rem 0;
+  padding: 0.5rem 0.9rem;
+  border-left: 3px solid var(--blue);
+  background: var(--win-face);
+  font-style: italic;
+  color: var(--ink-soft);
+}
+.review-body a { color: #3a5a8a; }
+
+/* embedded player */
+.embed-wrap {
+  margin-top: 1.2rem;
+  border: 2px solid;
+  border-color: var(--hi) var(--line-dark) var(--line-dark) var(--hi);
+  background: var(--win-face);
+  padding: 4px;
+}
+.embed-wrap iframe { display: block; }
+.embed-card {
+  margin-top: 1.2rem;
+  padding: 0.7rem 0.9rem;
+  background: var(--win-face);
+  border: 1px dashed var(--line);
+  font-family: var(--pixel);
+  font-size: 0.82rem;
+}
+
+/* notifications bell + dot */
+.notif-bell { position: relative; }
+.notif-dot {
+  position: absolute;
+  top: -6px; right: -6px;
+  background: var(--pink);
+  color: #fff;
+  font-family: var(--pixel);
+  font-size: 0.55rem;
+  line-height: 1;
+  padding: 2px 4px;
+  border: 1px solid #fff6;
+  min-width: 14px;
+  text-align: center;
+}
+.notif-list { display: flex; flex-direction: column; gap: 0.4rem; }
+.notif-item {
+  padding: 0.55rem 0.7rem;
+  background: var(--win-face);
+  border: 1px solid;
+  border-color: var(--hi) var(--lo) var(--lo) var(--hi);
+  border-left: 3px solid var(--line);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.8rem;
+}
+.notif-item:hover { background: #efe3e8; }
+.notif-item.unread { border-left-color: var(--pink); }
+.notif-text { font-family: var(--serif); font-size: 0.88rem; color: var(--ink-soft); }
+.notif-text strong { color: var(--ink); }
+.notif-when { font-family: var(--type); font-size: 0.62rem; color: var(--ink-mute); white-space: nowrap; flex-shrink: 0; }
+:root[data-theme="dark"] .notif-item:hover { background: #33323e; }
+
+/* visit counter (old-web style) */
+.visit-box {
+  margin-top: 0.7rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--line);
+  text-align: center;
+}
+.visit-label {
+  font-family: var(--type);
+  font-size: 0.58rem;
+  color: var(--ink-mute);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 0.35rem;
+}
+.visit-counter { display: inline-flex; gap: 2px; }
+.vc-digit {
+  font-family: var(--vt);
+  font-size: 1.2rem;
+  line-height: 1;
+  background: #101010;
+  color: #6fe06f;             /* phosphor green LCD look */
+  padding: 2px 5px;
+  border: 1px solid #000;
+  text-shadow: 0 0 4px rgba(111,224,111,0.6);
+}
+
+/* ─── 22. dark-mode patches for hardcoded colors ─────────────────────────── */
+
+:root[data-theme="dark"] body {
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.015) 0 1px, transparent 1px 3px),
+    radial-gradient(circle at 30% 20%, rgba(232,154,182,0.06), transparent 60%),
+    radial-gradient(circle at 75% 80%, rgba(154,182,232,0.06), transparent 60%);
+}
+
+/* title bars: in dark mode use accent-tinted gradients that read well */
+:root[data-theme="dark"] .win-bar,
+:root[data-theme="dark"] .review-card::before,
+:root[data-theme="dark"] .podium-card::before,
+:root[data-theme="dark"] .modal::before {
+  color: #e7e4dd;
+}
+
+/* covers: lighten the grunge filter so they're visible on dark */
+:root[data-theme="dark"] .review-card .cover img,
+:root[data-theme="dark"] .podium-cover-wrap img,
+:root[data-theme="dark"] .ranked-row .mini-cover img,
+:root[data-theme="dark"] .single-cover img,
+:root[data-theme="dark"] .profile-like-card .cover img,
+:root[data-theme="dark"] .cover-preview img {
+  filter: grayscale(1) contrast(1.05) brightness(1.05);
+}
+
+/* the accent text colors that were dark-on-light need lifting */
+:root[data-theme="dark"] .tab.active,
+:root[data-theme="dark"] .sb-nav button.active,
+:root[data-theme="dark"] .podium-body .score,
+:root[data-theme="dark"] .single-score .big,
+:root[data-theme="dark"] .info-stat .v,
+:root[data-theme="dark"] .verdict,
+:root[data-theme="dark"] .active-filter strong,
+:root[data-theme="dark"] .login-prompt a,
+:root[data-theme="dark"] .login-prompt strong,
+:root[data-theme="dark"] .like-btn.liked,
+:root[data-theme="dark"] .like-btn:hover {
+  color: var(--pink);
+}
+:root[data-theme="dark"] .podium-card.rank-3 .podium-body .score,
+:root[data-theme="dark"] .review-body a,
+:root[data-theme="dark"] .tag,
+:root[data-theme="dark"] .comment-head .author:hover { color: var(--blue); }
+
+/* hover/active fills that were pinkish #efe3e8 in light mode */
+:root[data-theme="dark"] .sb-nav button.active,
+:root[data-theme="dark"] .ranked-row:hover,
+:root[data-theme="dark"] .active-filter,
+:root[data-theme="dark"] .verdict { background: #2e2533; }
+:root[data-theme="dark"] .modal-tab.active { background: var(--win); color: var(--pink); }
+
+/* sidebar/in-page search input stays readable */
+:root[data-theme="dark"] .sb-search input,
+:root[data-theme="dark"] .search-wrap input,
+:root[data-theme="dark"] .form-field input,
+:root[data-theme="dark"] .form-field textarea,
+:root[data-theme="dark"] .form-field select,
+:root[data-theme="dark"] .comment-form textarea,
+:root[data-theme="dark"] .reply-form textarea {
+  background: #0e0d12;
+  color: var(--ink);
+}
+
+/* ─── 23. retro cursor ───────────────────────────────────────────────────── */
+/* a chunky pixel arrow; falls back to auto if the data URI is unsupported */
+html, body {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M2 2 L2 18 L6 14 L9 21 L12 20 L9 13 L15 13 Z' fill='%23ffffff' stroke='%23000000' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E") 2 2, auto;
+}
+a, button, .tab, .review-card, .podium-card, .ranked-row, .tag, .username,
+.comment-head .author, .notif-item, .profile-like-card, .modal-close,
+input[type="checkbox"], select, .sb-nav button, .like-btn, .back-btn {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 26 26'%3E%3Cpath d='M10 2 L10 12 L7 12 M10 2 Q13 2 13 6 L13 11 M13 7 Q16 7 16 10 L16 13 M16 9 Q19 9 19 12 L19 17 Q19 22 14 22 L11 22 Q8 22 7 18 L6 15' fill='%23ffffff' stroke='%23000000' stroke-width='1.3' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E") 9 2, pointer;
+}
+:root[data-theme="dark"] html,
+:root[data-theme="dark"] body {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M2 2 L2 18 L6 14 L9 21 L12 20 L9 13 L15 13 Z' fill='%23000000' stroke='%23ffffff' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E") 2 2, auto;
+}
 </style>
+
 </head>
 <body>
 
@@ -1302,6 +1510,11 @@ body::after {
             <button data-tab="reviews" class="active">★ reviews</button>
             <button data-tab="top">♛ top albums</button>
             <button data-tab="info">☆ info</button>
+          </div>
+
+          <div class="visit-box">
+            <div class="visit-label">you are visitor</div>
+            <div class="visit-counter" id="visit-counter"></div>
           </div>
 
           <div class="sb-meta">

@@ -17,6 +17,9 @@ COPY . .
 RUN test -f /app/index.html || (echo "ERROR: index.html missing from build context" && exit 1)
 RUN test -f /app/app.js     || (echo "ERROR: app.js missing from build context" && exit 1)
 
+# Verify sharp loaded its native binary correctly for this platform.
+RUN node -e "require('sharp'); console.log('sharp OK')"
+
 # The persistent volume mounts here (see fly.toml [mounts]).
 RUN mkdir -p /app/data
 

@@ -40,7 +40,12 @@ const state = {
   search: '',
   sort: 'newest',      // newest | rating | alpha
   tagFilter: null,
+  // notifications:
+  notifUnread: 0,
+  notifList: [],
 };
+
+const THEME_KEY = 'anchor_theme';
 
 function getToken() { return localStorage.getItem(TOKEN_KEY); }
 function setToken(t) { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); }
@@ -131,6 +136,86 @@ function fmtScore(r) {
   return (Math.round(r * 10) / 10).toFixed(1);
 }
 
+// ─── minimal, XSS-safe markdown ───────────────────────────────────────────────
+// Supports: **bold**, *italic* / _italic_, `code`, [text](https://link),
+// > blockquotes, and paragraph/line breaks. Everything is escaped FIRST, so no
+// raw HTML from the source can ever execute.
+function renderMarkdown(src) {
+  if (!src) return '';
+
+  const inline = (text) => {
+    let t = escapeHtml(text);
+    // inline code
+    t = t.replace(/`([^`]+?)`/g, '<code>$1</code>');
+    // bold then italic (order matters)
+    t = t.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
+    t = t.replace(/(^|[^*])\*([^*]+?)\*(?!\*)/g, '$1<em>$2</em>');
+    t = t.replace(/(^|[^_])_([^_]+?)_(?!_)/g, '$1<em>$2</em>');
+    // links — only http(s), and the URL is escaped already; add safety rel
+    t = t.replace(/\[([^\]]+?)\]\((https?:\/\/[^\s)]+)\)/g,
+      (m, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer nofollow">${label}</a>`);
+    return t;
+  };
+
+  const blocks = src.replace(/\r\n/g, '\n').split(/\n\s*\n/);
+  let html = '';
+  for (const block of blocks) {
+    const b = block.trim();
+    if (!b) continue;
+    const lines = b.split('\n');
+    if (lines.every(l => l.trim().startsWith('>'))) {
+      const inner = lines.map(l => inline(l.replace(/^\s*>\s?/, ''))).join('<br>');
+      html += '<blockquote>' + inner + '</blockquote>';
+    } else {
+      html += '<p>' + lines.map(inline).join('<br>') + '</p>';
+    }
+  }
+  return html;
+}
+
+// Turn a known music/video URL into an embed iframe. Returns '' if not supported.
+function renderEmbed(url) {
+  if (!url) return '';
+  let u;
+  try { u = new URL(url); } catch { return ''; }
+  const host = u.hostname.replace(/^www\./, '');
+  let src = '';
+  let tall = false;
+
+  if (host === 'open.spotify.com') {
+    // /track/ID, /album/ID, /playlist/ID -> /embed/<type>/<id>
+    src = 'https://open.spotify.com/embed' + u.pathname;
+    tall = /\/(album|playlist|artist)\//.test(u.pathname);
+  } else if (host.endsWith('bandcamp.com')) {
+    // bandcamp needs the EmbeddedPlayer; we can only embed if it's already that.
+    // fall back to a link-card if it's a normal page.
+    if (u.pathname.startsWith('/EmbeddedPlayer')) { src = url; tall = true; }
+  } else if (host === 'youtube.com' || host === 'music.youtube.com') {
+    const id = u.searchParams.get('v');
+    if (id) src = 'https://www.youtube.com/embed/' + encodeURIComponent(id);
+  } else if (host === 'youtu.be') {
+    const id = u.pathname.slice(1);
+    if (id) src = 'https://www.youtube.com/embed/' + encodeURIComponent(id);
+  } else if (host === 'soundcloud.com') {
+    src = 'https://w.soundcloud.com/player/?url=' + encodeURIComponent(url) + '&color=%23d98aa6';
+  } else if (host === 'music.apple.com') {
+    src = 'https://embed.music.apple.com' + u.pathname + u.search;
+    tall = true;
+  }
+
+  if (!src) {
+    // unsupported-but-allowed link → a simple card instead of an iframe
+    return '<div class="embed-card"><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">♪ listen — ' + escapeHtml(host) + '</a></div>';
+  }
+
+  const isYT = src.includes('youtube.com/embed');
+  const h = isYT ? 215 : (tall ? 352 : 152);
+  return '<div class="embed-wrap"><iframe src="' + escapeHtml(src) + '" ' +
+    'style="width:100%;height:' + h + 'px;border:0;" ' +
+    'loading="lazy" allow="autoplay; encrypted-media; fullscreen; picture-in-picture" ' +
+    'allowfullscreen referrerpolicy="no-referrer"></iframe></div>';
+}
+
 // ─── 4. auth ─────────────────────────────────────────────────────────────────
 
 async function loadSession() {
@@ -159,6 +244,8 @@ async function doRegister(username, password) {
 function doLogout() {
   setToken(null);
   state.user = null;
+  state.notifUnread = 0;
+  state.notifList = [];
   applyAdminClass();
   renderUserWidget();
   // if we were somewhere user-specific, bounce to reviews
@@ -173,9 +260,16 @@ function applyAdminClass() {
 
 function renderUserWidget() {
   const el = document.getElementById('user-widget');
+  const themeBtn = '<button id="btn-theme" title="toggle dark mode">' + (isDark() ? '☀ light' : '☾ dark') + '</button>';
+
   if (state.user) {
     const badge = state.user.is_admin ? '<span class="admin-badge">admin</span>' : '';
+    const bell = '<button id="btn-notif" class="notif-bell" title="notifications">✉' +
+      (state.notifUnread > 0 ? '<span class="notif-dot">' + (state.notifUnread > 9 ? '9+' : state.notifUnread) + '</span>' : '') +
+      '</button>';
     el.innerHTML =
+      themeBtn +
+      bell +
       '<span class="username" data-profile="' + escapeHtml(state.user.username) + '">' +
         escapeHtml(state.user.username) + badge +
       '</span>' +
@@ -184,12 +278,90 @@ function renderUserWidget() {
     el.querySelector('.username').onclick = () => openProfile(state.user.username);
     el.querySelector('#btn-logout').onclick = doLogout;
     el.querySelector('#btn-change-pw').onclick = openChangePassword;
+    el.querySelector('#btn-notif').onclick = openNotifications;
+    el.querySelector('#btn-theme').onclick = toggleTheme;
   } else {
     el.innerHTML =
+      themeBtn +
       '<button id="btn-login">log in</button>' +
       '<button id="btn-register">register</button>';
     el.querySelector('#btn-login').onclick = () => openAuthModal('login');
     el.querySelector('#btn-register').onclick = () => openAuthModal('register');
+    el.querySelector('#btn-theme').onclick = toggleTheme;
+  }
+}
+
+// ─── theme (dark / light) ─────────────────────────────────────────────────────
+
+function isDark() { return document.documentElement.getAttribute('data-theme') === 'dark'; }
+
+// renders the old-web pixel visit counter into the sidebar slot
+function renderVisitCounter(n) {
+  const el = document.getElementById('visit-counter');
+  if (!el) return;
+  const padded = String(n).padStart(6, '0');
+  el.innerHTML = padded.split('').map(d => '<span class="vc-digit">' + d + '</span>').join('');
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
+}
+
+function toggleTheme() {
+  const next = isDark() ? 'light' : 'dark';
+  applyTheme(next);
+  try { localStorage.setItem(THEME_KEY, next); } catch {}
+  renderUserWidget();
+}
+
+// ─── notifications ────────────────────────────────────────────────────────────
+
+async function loadNotifications() {
+  if (!state.user) { state.notifUnread = 0; state.notifList = []; return; }
+  try {
+    const data = await api('/notifications');
+    state.notifUnread = data.unread || 0;
+    state.notifList = data.notifications || [];
+  } catch { state.notifUnread = 0; state.notifList = []; }
+}
+
+async function openNotifications() {
+  await loadNotifications();
+  const root = document.getElementById('modal-root');
+
+  const items = state.notifList.length
+    ? state.notifList.map(n => {
+        const unreadCls = n.is_read ? '' : ' unread';
+        const where = n.album_title
+          ? 'on <strong>' + escapeHtml(n.album_title) + '</strong>'
+          : 'on a review';
+        return '<div class="notif-item' + unreadCls + '" data-album="' + n.album_id + '">' +
+          '<div class="notif-text"><strong>' + escapeHtml(n.actor) + '</strong> replied to your comment ' + where + '</div>' +
+          '<div class="notif-when">' + timeAgo(n.created_at) + '</div>' +
+        '</div>';
+      }).join('')
+    : '<div class="muted" style="padding:0.5rem 0">no notifications yet.</div>';
+
+  root.innerHTML =
+    '<div class="modal-backdrop" id="backdrop">' +
+      '<div class="modal fade-in">' +
+        '<button class="modal-close" id="modal-close">×</button>' +
+        '<h3>notifications</h3>' +
+        '<div class="notif-list">' + items + '</div>' +
+      '</div>' +
+    '</div>';
+
+  root.querySelector('#modal-close').onclick = closeModal;
+  root.querySelector('#backdrop').onclick = (e) => { if (e.target.id === 'backdrop') closeModal(); };
+  root.querySelectorAll('.notif-item').forEach(it => {
+    it.onclick = () => { closeModal(); openSingle(parseInt(it.dataset.album, 10)); };
+  });
+
+  // mark all read
+  if (state.notifUnread > 0) {
+    try { await api('/notifications/read', { method: 'POST' }); } catch {}
+    state.notifUnread = 0;
+    renderUserWidget();
   }
 }
 
@@ -429,10 +601,7 @@ async function openSingle(id) {
   const idx = state.albums.findIndex(x => x.id === album.id);
   if (idx >= 0) state.albums[idx] = album;
 
-  const bodyParas = (album.body || '')
-    .split(/\n\s*\n/)
-    .map(p => '<p>' + escapeHtml(p.trim()).replace(/\n/g, '<br>') + '</p>')
-    .join('');
+  const bodyParas = renderMarkdown(album.body || '');
 
   const tags = album.tags.map(t =>
     '<button class="tag" data-tag="' + escapeHtml(t) + '">' + escapeHtml(t) + '</button>'
@@ -471,6 +640,7 @@ async function openSingle(id) {
         '<div class="stars">' + renderStars(album.rating) + '</div>' +
         '<div class="review-body">' + bodyParas +
           (album.verdict ? '<div class="verdict">' + escapeHtml(album.verdict) + '</div>' : '') +
+          renderEmbed(album.embed_url) +
         '</div>' +
         '<div class="notes-bar">' +
           '<button class="' + likeCls + '" id="like-btn"><span class="heart">♥</span> ' + likeLabel + '</button>' +
@@ -849,6 +1019,7 @@ function openAuthModal(mode) {
     try {
       if (current === 'login') await doLogin(u, p);
       else await doRegister(u, p);
+      await loadNotifications();
       closeModal();
       refreshAll();
     } catch (e) {
@@ -930,10 +1101,16 @@ function openAlbumForm(album) {
           '</div>' +
         '</div>' +
         '<div class="form-row single">' +
+          '<div class="form-field"><label>embed link (spotify / bandcamp / youtube / soundcloud / apple music)</label>' +
+            '<input id="f-embed" placeholder="https://open.spotify.com/album/…" value="' + escapeHtml(a.embed_url || '') + '">' +
+            '<div class="form-help">optional — paste a link to embed a player under the review.</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="form-row single">' +
           '<div class="form-field"><label>snippet (short summary)</label><textarea id="f-snippet" style="min-height:50px">' + escapeHtml(a.snippet || '') + '</textarea></div>' +
         '</div>' +
         '<div class="form-row single">' +
-          '<div class="form-field"><label>review (blank line separates paragraphs)</label><textarea id="f-body" style="min-height:160px">' + escapeHtml(a.body || '') + '</textarea></div>' +
+          '<div class="form-field"><label>review — markdown ok: **bold** *italic* `code` &gt; quote [link](url)</label><textarea id="f-body" style="min-height:160px">' + escapeHtml(a.body || '') + '</textarea></div>' +
         '</div>' +
         '<div class="form-row single">' +
           '<div class="form-field"><label>verdict</label><textarea id="f-verdict" style="min-height:50px">' + escapeHtml(a.verdict || '') + '</textarea></div>' +
@@ -981,6 +1158,7 @@ function openAlbumForm(album) {
     genre: root.querySelector('#f-genre').value,
     rating: root.querySelector('#f-rating').value,
     cover_url: root.querySelector('#f-cover').value,
+    embed_url: root.querySelector('#f-embed').value,
     tags: root.querySelector('#f-tags').value,
     snippet: root.querySelector('#f-snippet').value,
     body: root.querySelector('#f-body').value,
@@ -1026,9 +1204,24 @@ function confirmDeleteAlbum(album) {
 // ─── 18. init ────────────────────────────────────────────────────────────────
 
 async function init() {
+  // theme first, so there's no flash
+  let savedTheme = 'light';
+  try { savedTheme = localStorage.getItem(THEME_KEY) || 'light'; } catch {}
+  applyTheme(savedTheme);
+
   await loadSession();
   applyAdminClass();
+  await loadNotifications();
   renderUserWidget();
+
+  // bump the visit counter once per browser session, then show it
+  try {
+    let counted = false;
+    try { counted = sessionStorage.getItem('anchor_visited') === '1'; } catch {}
+    const data = counted ? await api('/visit') : await api('/visit', { method: 'POST' });
+    if (!counted) { try { sessionStorage.setItem('anchor_visited', '1'); } catch {} }
+    renderVisitCounter(data.visits);
+  } catch { /* counter is non-critical */ }
 
   try {
     await loadAlbums();

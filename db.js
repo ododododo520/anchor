@@ -74,6 +74,40 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_albums_draft     ON albums(is_draft);
 `);
 
+// ─── migrations (safe to run every startup) ───────────────────────────────────
+
+// add embed_url to albums if it doesn't exist yet
+const albumCols = db.prepare(`PRAGMA table_info(albums)`).all().map(c => c.name);
+if (!albumCols.includes('embed_url')) {
+  db.exec(`ALTER TABLE albums ADD COLUMN embed_url TEXT`);
+  console.log('[db] migration: added albums.embed_url');
+}
+
+// notifications: created when someone replies to your comment
+db.exec(`
+  CREATE TABLE IF NOT EXISTS notifications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,          -- recipient
+    actor       TEXT    NOT NULL,          -- username who triggered it
+    album_id    INTEGER NOT NULL,
+    comment_id  INTEGER,
+    kind        TEXT    NOT NULL DEFAULT 'reply',
+    is_read     INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id)  REFERENCES users(id)  ON DELETE CASCADE,
+    FOREIGN KEY (album_id) REFERENCES albums(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read);
+
+  CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+  );
+`);
+
+// seed the visit counter row
+db.prepare(`INSERT OR IGNORE INTO meta (key, value) VALUES ('visits', '0')`).run();
+
 // ─── default seed (only if albums table is empty) ─────────────────────────────
 
 const albumCount = db.prepare('SELECT COUNT(*) AS c FROM albums').get().c;

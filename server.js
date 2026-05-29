@@ -27,6 +27,7 @@ const rateLimit= require('express-rate-limit');
 const bcrypt   = require('bcryptjs');
 const jwt      = require('jsonwebtoken');
 const multer   = require('multer');
+const sharp    = require('sharp');
 const db       = require('./db');
 
 // ─── 1. config ────────────────────────────────────────────────────────────────
@@ -83,6 +84,24 @@ const authLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { error: 'too many attempts, slow down' },
+});
+
+// limit comment posting: max 10 per 5 minutes per IP
+const commentLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'you are commenting too fast, take a breather' },
+});
+
+// limit like toggling: max 60 per minute per IP (generous, just anti-spam)
+const likeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'slow down' },
 });
 
 // ─── 3. auth helpers ──────────────────────────────────────────────────────────
@@ -157,14 +176,7 @@ app.use(attachUser);
 // ─── 5. file upload ───────────────────────────────────────────────────────────
 
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: UPLOAD_DIR,
-    filename: (_req, file, cb) => {
-      const ext = (path.extname(file.originalname) || '').toLowerCase().slice(0, 6);
-      const safeExt = /^\.(jpe?g|png|gif|webp|avif)$/i.test(ext) ? ext : '.jpg';
-      cb(null, crypto.randomBytes(16).toString('hex') + safeExt);
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
     if (!/^image\/(jpe?g|png|gif|webp|avif)$/i.test(file.mimetype)) {
@@ -194,6 +206,7 @@ function rowToAlbum(row, viewerId = null) {
     genre:     row.genre,
     rating:    row.rating,
     cover_url: row.cover_url,
+    embed_url: row.embed_url || null,
     tags,
     snippet:   row.snippet,
     body:      row.body,
@@ -257,6 +270,13 @@ function parseAlbumInput(body) {
     tags = body.tags.split(',').map(t => t.trim()).filter(Boolean).slice(0, 20);
   }
 
+  // validate embed url: only allow known music/video hosts
+  let embedUrl = strOrNull(body.embed_url);
+  if (embedUrl && !isAllowedEmbed(embedUrl)) {
+    errors.push('embed link must be from spotify, bandcamp, youtube, soundcloud, or apple music');
+    embedUrl = null;
+  }
+
   return {
     errors,
     data: {
@@ -266,6 +286,7 @@ function parseAlbumInput(body) {
       genre:     strOrNull(body.genre),
       rating,
       cover_url: strOrNull(body.cover_url),
+      embed_url: embedUrl,
       tags,
       snippet:   strOrNull(body.snippet),
       body:      strOrNull(body.body),
@@ -273,6 +294,23 @@ function parseAlbumInput(body) {
       is_draft:  body.is_draft ? 1 : 0,
     },
   };
+}
+
+// Returns true if a URL is from a host we're willing to embed.
+function isAllowedEmbed(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return false;
+    const host = u.hostname.replace(/^www\./, '');
+    const ok = [
+      'open.spotify.com', 'spotify.com',
+      'bandcamp.com', // also <artist>.bandcamp.com
+      'youtube.com', 'youtu.be', 'music.youtube.com',
+      'soundcloud.com',
+      'music.apple.com',
+    ];
+    return ok.some(d => host === d || host.endsWith('.' + d) || host.endsWith('bandcamp.com'));
+  } catch { return false; }
 }
 
 // ─── 7. auth routes ───────────────────────────────────────────────────────────
@@ -361,9 +399,9 @@ app.post('/api/albums', requireAdmin, (req, res) => {
   if (errors.length) return res.status(400).json({ error: errors.join(', ') });
 
   const result = db.prepare(`
-    INSERT INTO albums (artist, title, year, genre, rating, cover_url, tags, snippet, body, verdict, is_draft)
-    VALUES (?,      ?,     ?,    ?,     ?,      ?,         ?,    ?,       ?,    ?,       ?)
-  `).run(data.artist, data.title, data.year, data.genre, data.rating, data.cover_url,
+    INSERT INTO albums (artist, title, year, genre, rating, cover_url, embed_url, tags, snippet, body, verdict, is_draft)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(data.artist, data.title, data.year, data.genre, data.rating, data.cover_url, data.embed_url,
          JSON.stringify(data.tags), data.snippet, data.body, data.verdict, data.is_draft);
 
   const row = db.prepare('SELECT * FROM albums WHERE id = ?').get(result.lastInsertRowid);
@@ -381,9 +419,9 @@ app.put('/api/albums/:id', requireAdmin, (req, res) => {
 
   db.prepare(`
     UPDATE albums
-       SET artist=?, title=?, year=?, genre=?, rating=?, cover_url=?, tags=?, snippet=?, body=?, verdict=?, is_draft=?, updated_at=datetime('now')
+       SET artist=?, title=?, year=?, genre=?, rating=?, cover_url=?, embed_url=?, tags=?, snippet=?, body=?, verdict=?, is_draft=?, updated_at=datetime('now')
      WHERE id=?
-  `).run(data.artist, data.title, data.year, data.genre, data.rating, data.cover_url,
+  `).run(data.artist, data.title, data.year, data.genre, data.rating, data.cover_url, data.embed_url,
          JSON.stringify(data.tags), data.snippet, data.body, data.verdict, data.is_draft, id);
 
   const row = db.prepare('SELECT * FROM albums WHERE id = ?').get(id);
@@ -399,25 +437,36 @@ app.delete('/api/albums/:id', requireAdmin, (req, res) => {
 });
 
 // upload cover image for an album (admin)
-// frontend sends multipart/form-data with field "cover"
-app.post('/api/albums/:id/cover', requireAdmin, (req, res, next) => {
-  upload.single('cover')(req, res, (err) => {
+// frontend sends multipart/form-data with field "cover".
+// We resize to max 800px and re-encode as webp to keep files small.
+app.post('/api/albums/:id/cover', requireAdmin, (req, res) => {
+  upload.single('cover')(req, res, async (err) => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: 'no file uploaded' });
 
     const id = parseInt(req.params.id, 10);
     const exists = db.prepare('SELECT cover_url FROM albums WHERE id = ?').get(id);
-    if (!exists) {
-      // clean up the file we just wrote
-      fs.unlink(req.file.path, () => {});
-      return res.status(404).json({ error: 'album not found' });
+    if (!exists) return res.status(404).json({ error: 'album not found' });
+
+    const filename = crypto.randomBytes(16).toString('hex') + '.webp';
+    const outPath = path.join(UPLOAD_DIR, filename);
+
+    try {
+      await sharp(req.file.buffer, { animated: true })
+        .rotate()                               // respect EXIF orientation
+        .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
+        .webp({ quality: 82 })
+        .toFile(outPath);
+    } catch (e) {
+      return res.status(400).json({ error: 'could not process image (' + e.message + ')' });
     }
-    // if old cover was an upload, delete the file
+
+    // delete old uploaded cover if there was one
     if (exists.cover_url && exists.cover_url.startsWith('/uploads/')) {
-      const oldPath = path.join(UPLOAD_DIR, path.basename(exists.cover_url));
-      fs.unlink(oldPath, () => {});
+      fs.unlink(path.join(UPLOAD_DIR, path.basename(exists.cover_url)), () => {});
     }
-    const url = `/uploads/${req.file.filename}`;
+
+    const url = `/uploads/${filename}`;
     db.prepare('UPDATE albums SET cover_url = ?, updated_at = datetime(\'now\') WHERE id = ?').run(url, id);
     res.json({ cover_url: url });
   });
@@ -438,7 +487,7 @@ app.get('/api/albums/:id/comments', (req, res) => {
   res.json({ comments: rows.map(rowToComment) });
 });
 
-app.post('/api/albums/:id/comments', requireUser, (req, res) => {
+app.post('/api/albums/:id/comments', commentLimiter, requireUser, (req, res) => {
   const albumId = parseInt(req.params.id, 10);
   const body = strOrNull(req.body.body);
   if (!body) return res.status(400).json({ error: 'comment body required' });
@@ -450,16 +499,26 @@ app.post('/api/albums/:id/comments', requireUser, (req, res) => {
 
   // parent must be a comment under the same album, if provided
   let parentId = null;
+  let parentOwnerId = null;
   if (req.body.parent_id != null && req.body.parent_id !== '') {
     const pid = parseInt(req.body.parent_id, 10);
-    const parent = db.prepare('SELECT id, parent_id FROM comments WHERE id = ? AND album_id = ?').get(pid, albumId);
+    const parent = db.prepare('SELECT id, parent_id, user_id FROM comments WHERE id = ? AND album_id = ?').get(pid, albumId);
     if (!parent) return res.status(400).json({ error: 'invalid parent comment' });
     // limit to one level of nesting: replies always attach to top-level
     parentId = parent.parent_id || parent.id;
+    // notify the person we're directly replying to
+    parentOwnerId = parent.user_id;
   }
 
   const result = db.prepare('INSERT INTO comments (album_id, user_id, parent_id, body) VALUES (?, ?, ?, ?)')
     .run(albumId, req.user.id, parentId, body);
+
+  // create a notification for the parent comment's author (not for self-replies)
+  if (parentOwnerId && parentOwnerId !== req.user.id) {
+    db.prepare(`INSERT INTO notifications (user_id, actor, album_id, comment_id, kind)
+                VALUES (?, ?, ?, ?, 'reply')`)
+      .run(parentOwnerId, req.user.username, albumId, result.lastInsertRowid);
+  }
 
   const row = db.prepare(`
     SELECT c.id, c.album_id, c.user_id, c.parent_id, c.body, c.created_at,
@@ -486,7 +545,7 @@ app.delete('/api/comments/:id', requireUser, (req, res) => {
 
 // ─── 10. likes ────────────────────────────────────────────────────────────────
 
-app.post('/api/albums/:id/like', requireUser, (req, res) => {
+app.post('/api/albums/:id/like', likeLimiter, requireUser, (req, res) => {
   const albumId = parseInt(req.params.id, 10);
   const album = db.prepare('SELECT id, is_draft FROM albums WHERE id = ?').get(albumId);
   if (!album) return res.status(404).json({ error: 'album not found' });
@@ -542,6 +601,43 @@ app.get('/api/users/:username', (req, res) => {
   });
 });
 
+// ─── 11b. notifications ───────────────────────────────────────────────────────
+
+// list my notifications (newest first) + unread count
+app.get('/api/notifications', requireUser, (req, res) => {
+  const rows = db.prepare(`
+    SELECT n.id, n.actor, n.album_id, n.comment_id, n.kind, n.is_read, n.created_at,
+           a.title AS album_title, a.artist AS album_artist
+      FROM notifications n
+      LEFT JOIN albums a ON a.id = n.album_id
+     WHERE n.user_id = ?
+     ORDER BY n.id DESC
+     LIMIT 50
+  `).all(req.user.id);
+  const unread = db.prepare('SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND is_read = 0').get(req.user.id).c;
+  res.json({ notifications: rows, unread });
+});
+
+// mark all my notifications read
+app.post('/api/notifications/read', requireUser, (req, res) => {
+  db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?').run(req.user.id);
+  res.json({ ok: true });
+});
+
+// ─── 11c. visit counter ───────────────────────────────────────────────────────
+
+// increment + return the visit count. Frontend calls this once per session.
+app.post('/api/visit', (req, res) => {
+  const row = db.prepare("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'visits' RETURNING value").get();
+  res.json({ visits: row ? parseInt(row.value, 10) : 0 });
+});
+
+// just read the count without incrementing
+app.get('/api/visit', (_req, res) => {
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'visits'").get();
+  res.json({ visits: row ? parseInt(row.value, 10) : 0 });
+});
+
 // ─── 12. error handler + start ────────────────────────────────────────────────
 
 // SPA fallback: unmatched non-API GET paths return index.html — but paths that
@@ -558,6 +654,41 @@ app.use((err, _req, res, _next) => {
   if (res.headersSent) return;
   res.status(err.status || 500).json({ error: err.message || 'internal error' });
 });
+
+// ─── automatic database backups ───────────────────────────────────────────────
+// Uses SQLite's `VACUUM INTO`, which makes a clean, consistent copy even while
+// the DB is in use. Keeps the most recent N backups under data/backups/.
+
+const BACKUP_DIR     = process.env.BACKUP_DIR || path.join(path.dirname(process.env.DATABASE_PATH || path.join(__dirname, 'data', 'anchor.db')), 'backups');
+const BACKUP_EVERY_H = parseInt(process.env.BACKUP_INTERVAL_HOURS || '24', 10);
+const BACKUP_KEEP    = parseInt(process.env.BACKUP_KEEP || '7', 10);
+
+function runBackup() {
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const dest = path.join(BACKUP_DIR, `anchor-${stamp}.db`);
+    // VACUUM INTO needs a string literal path with quotes escaped
+    db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+    // prune old backups
+    const files = fs.readdirSync(BACKUP_DIR)
+      .filter(f => f.startsWith('anchor-') && f.endsWith('.db'))
+      .sort()
+      .reverse();
+    for (const old of files.slice(BACKUP_KEEP)) {
+      fs.unlink(path.join(BACKUP_DIR, old), () => {});
+    }
+    console.log(`[backup] wrote ${path.basename(dest)} (keeping ${Math.min(files.length, BACKUP_KEEP)})`);
+  } catch (e) {
+    console.error('[backup] failed:', e.message);
+  }
+}
+
+if (BACKUP_EVERY_H > 0) {
+  // first backup shortly after start, then on the interval
+  setTimeout(runBackup, 30 * 1000);
+  setInterval(runBackup, BACKUP_EVERY_H * 60 * 60 * 1000);
+}
 
 // Bind to 0.0.0.0 so it works inside containers (Fly.io, Docker, etc.),
 // not just localhost. HOST can override if needed.
